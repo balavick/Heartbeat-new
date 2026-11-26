@@ -1,0 +1,8 @@
+{
+  "name": "heartbeat",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Alerts you when an automation goes quiet. Runs entirely on Netlify.",
+  "scripts": { "test": "node --test" },
+  "dependencies": { "@netlify/blobs": "^8.1.1" }
+}
