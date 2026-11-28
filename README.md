@@ -32,6 +32,11 @@ Send `{"ok": false, "error": "..."}` to report a failure. Workflows appear after
 - Each run is one Blob, so simultaneous pings never overwrite each other.
 - `web/assets/engine.js` holds the health rules, shared by the browser demo and the functions.
 
+## Activity and notifications
+- **Activity** lists the newest runs across all workflows, with a Failed-only filter.
+- **Notifications** (the bell) show alerts logged by the 5-minute check: a workflow going silent, late, failing or low volume, and recoveries. History is kept for 30 days. "Mark all as read" is stored in your browser.
+- Alerts only appear after the scheduled function has run on the published deploy, so allow 5 minutes after your first problem.
+
 ## Limits
 Built for small teams (tens of workflows). It lists Blobs to evaluate health, so very high ping volumes would need a database. Check Netlify's current plan limits for functions and Blobs.
 

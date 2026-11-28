@@ -50,3 +50,15 @@ test("quiet hours are not an outage, missed business hours are", () => {
   assert.equal(evaluate(runs, B + 3 * 3600).state, "ok");
   assert.equal(evaluate([...runs, B + 9 * 3600], B + 14.5 * 3600).state, "down");
 });
+
+test("alerts history and activity feed", async () => {
+  const s = mem(); await seed(s, "ok-one"); await seed(s, "quiet", 3); await record(s, "ok-one", { ok: false, error: "boom" }, NOW + 1000);
+  await check(s, ENV, NOW / 1000);
+  const ck = { headers: { cookie: await cookie(s) } };
+  const alerts = await (await handle(req("/api/alerts", ck), s, ENV, NOW)).json();
+  assert.ok(alerts.some(a => a.slug === "quiet" && a.state === "down" && a.ts > 0));
+  const act = await (await handle(req("/api/activity", ck), s, ENV, NOW + 2000)).json();
+  assert.ok(act.length > 0 && act.length <= 40 && act[0].ts >= act.at(-1).ts);
+  assert.equal(act[0].slug, "ok-one"); assert.equal(act[0].ok, 0); assert.ok(act[0].payload.includes("boom"));
+  assert.equal((await handle(req("/api/alerts"), s, ENV, NOW)).status, 401);
+});

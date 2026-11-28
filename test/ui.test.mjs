@@ -28,3 +28,9 @@ test("settings renders sections", async () => {
   for (const s of ["Appearance", "Ingest token", "Report a run", "Reset demo data"]) assert.ok(h.includes(s), s);
 });
 test("without ?demo and without a server it falls back to demo", async () => assert.ok((await boot("", "")).includes("Demo workspace")));
+
+test("activity tab and notifications bell render", async () => {
+  const a = await boot("#/activity");
+  for (const x of ["Recent runs", "Failed only", "crm-export", "Notifications", "unread"]) assert.ok(a.includes(x), x);
+  assert.ok(a.includes('href="#/activity"'));
+});

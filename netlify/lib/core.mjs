@@ -63,6 +63,17 @@ export async function handle(req, store, env, now = Date.now()) {
 
   if (!validCookie(c, cookieOf(req), now)) return json({ error: "login required" }, 401);
   if (p === "/api/settings") return json({ ingest_token: c.token });
+  if (p === "/api/alerts") { // alert history written by the scheduled check
+    const keys = (await store.list({ prefix: "a/" })).blobs.map(b => b.key).sort().slice(-30).reverse();
+    const vals = await Promise.all(keys.map(k => store.get(k, { type: "json" })));
+    return json(keys.map((k, i) => ({ ts: +k.slice(2, 15) / 1000, ...vals[i] })));
+  }
+  if (p === "/api/activity") { // newest runs across all workflows
+    const all = [];
+    for (const b of (await store.list({ prefix: "s/" })).blobs) { const slug = b.key.slice(2); for (const r of (await runs(store, slug)).slice(-10)) all.push({ slug, ...r }); }
+    const top = all.sort((a, b) => b.t - a.t).slice(0, 40), vals = await Promise.all(top.map(x => x.ok ? null : store.get(x.key, { type: "json" })));
+    return json(top.map((x, i) => ({ slug: x.slug, ts: x.t, ok: x.ok ? 1 : 0, payload: vals[i]?.p ?? "" })));
+  }
   if (p === "/api/monitors") return json(await snapshot(store, now / 1000));
   if (p.startsWith("/api/monitors/")) {
     const slug = decodeURIComponent(p.slice(14)), m = (await snapshot(store, now / 1000)).find(x => x.slug === slug);
@@ -104,12 +115,16 @@ async function notify(store, m, env) {
 }
 // Scheduled: alert on each state change into a bad state, and prune runs older than 8 days.
 export async function check(store, env, now = Date.now() / 1000) {
-  const alerts = [];
+  const alerts = [], log = (m, text) => store.set(`a/${pad(now * 1000)}-${m.slug}`, JSON.stringify({ slug: m.slug, state: m.state, text }));
   for (const m of await snapshot(store, now)) {
     const prev = await store.get(`st/${m.slug}`);
-    if (prev !== m.state) { await store.set(`st/${m.slug}`, m.state); if (BAD.has(m.state)) alerts.push(m); }
+    if (prev !== m.state) {
+      await store.set(`st/${m.slug}`, m.state);
+      if (BAD.has(m.state)) alerts.push(m); else if (m.state === "ok" && BAD.has(prev)) await log(m, `${m.slug} recovered and is running normally`);
+    }
     for (const x of await runs(store, m.slug)) if (x.t < now - KEEP) await store.delete(x.key);
   }
-  for (const m of alerts) await notify(store, m, env);
+  for (const m of alerts) await log(m, await notify(store, m, env));
+  for (const b of (await store.list({ prefix: "a/" })).blobs) if (+b.key.slice(2, 15) < (now - 30 * DAY) * 1000) await store.delete(b.key);
   return alerts.map(m => m.slug);
 }

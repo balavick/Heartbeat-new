@@ -12,7 +12,7 @@ const WHY = {
 };
 const TONE = { ok: "ok", learning: "idle", late: "warn", degraded: "warn", down: "bad", failing: "bad" };
 const ORDER = { failing: 0, down: 1, late: 2, degraded: 3, learning: 4, ok: 5 };
-const S = { mode: "loading", list: [], q: "", f: "all", runs: {}, token: null, revealed: false, loginErr: "", err: false, setup: "" };
+const S = { alerts: [], act: [], inbox: false, af: "all", readMem: 0, mode: "loading", list: [], q: "", f: "all", runs: {}, token: null, revealed: false, loginErr: "", err: false, setup: "" };
 const demoOnly = new URLSearchParams(location.search).has("demo");
 let demo = null;
 
@@ -51,7 +51,9 @@ async function refresh() {
   if (demoOnly) { useDemo(); return render(); }
   try {
     const r = await api("/api/monitors");
-    if (r.json && r.status === 200) { S.mode = "live"; S.list = r.json; S.err = false; }
+    if (r.json && r.status === 200) { S.mode = "live"; S.list = r.json; S.err = false;
+      const [al, ac] = await Promise.all([api("/api/alerts").catch(() => null), route()[0] === "a" ? api("/api/activity").catch(() => null) : null]);
+      if (al?.json) S.alerts = al.json; if (ac?.json) S.act = ac.json; }
     else if (r.json && r.status === 401) S.mode = "login";
     else if (r.json && r.status === 503) { S.mode = "setup"; S.setup = r.json.error; }
     else useDemo();
@@ -61,15 +63,16 @@ async function refresh() {
 async function onRoute() {
   const [r, arg] = route();
   if (S.mode === "live" && r === "d") { const x = await api("/api/monitors/" + encodeURIComponent(arg)).catch(() => null); if (x?.json?.runs) S.runs[arg] = x.json.runs.map(p => { let n = {}; try { n = JSON.parse(p.payload); } catch {} return { t: p.ts, ok: !!p.ok, d: p.duration_ms, note: n.error || n.note }; }); }
+  if (S.mode === "live" && r === "a") { const x = await api("/api/activity").catch(() => null); if (x?.json) S.act = x.json; }
   if (S.mode === "live" && r === "s" && !S.token) { const x = await api("/api/settings").catch(() => null); S.token = x?.json?.ingest_token || null; }
   render();
 }
-const route = () => { const h = location.hash.slice(1) || "/"; return h.startsWith("/m/") ? ["d", decodeURIComponent(h.slice(3))] : h === "/settings" ? ["s"] : ["o"]; };
+const route = () => { const h = location.hash.slice(1) || "/"; return h.startsWith("/m/") ? ["d", decodeURIComponent(h.slice(3))] : h === "/settings" ? ["s"] : h === "/activity" ? ["a"] : ["o"]; };
 
 const shell = (c, r) => `<header class="top"><div class="bar1"><a class="brand" href="#/" aria-label="Heartbeat home">${LOGO}<span>Heartbeat</span></a><span class="sep" aria-hidden="true">/</span>
-<span class="ws"><i class="av" aria-hidden="true">H</i>${S.mode === "demo" ? "Demo workspace" : "My workspace"}<b class="env ${S.mode === "demo" ? "" : "live"}">${S.mode === "demo" ? "Demo" : "Live"}</b></span><span class="grow"></span>
+<span class="ws"><i class="av" aria-hidden="true">H</i>${S.mode === "demo" ? "Demo workspace" : "My workspace"}<b class="env ${S.mode === "demo" ? "" : "live"}">${S.mode === "demo" ? "Demo" : "Live"}</b></span><span class="grow"></span>${bell()}
 ${S.mode === "live" ? '<button class="btn sm" data-act="signout">Sign out</button>' : demoOnly ? '<a class="btn sm" href="/">Open live monitor</a>' : ""}</div>
-<nav class="tabs" aria-label="Main"><a href="#/" ${r !== "s" ? 'aria-current="page"' : ""}>Overview</a><a href="#/settings" ${r === "s" ? 'aria-current="page"' : ""}>Settings</a></nav></header>
+<nav class="tabs" aria-label="Main"><a href="#/" ${r === "o" || r === "d" ? 'aria-current="page"' : ""}>Overview</a><a href="#/activity" ${r === "a" ? 'aria-current="page"' : ""}>Activity</a><a href="#/settings" ${r === "s" ? 'aria-current="page"' : ""}>Settings</a></nav></header>
 <main class="page">${S.err ? '<p class="note" role="alert">Cannot reach the server. Showing the last data received.</p>' : ""}${c}</main><div id="toast" role="status" aria-live="polite"></div>`;
 
 function rows() {
@@ -100,6 +103,29 @@ function detail(slug) {
 ${S.mode === "demo" ? `<section class="card"><div class="card-b"><h2>Try it</h2><p>Simulate this workflow reporting in. This changes nothing on any server.</p></div><div class="card-f"><span>Watch the status and counts update.</span><span><button class="btn" data-act="fail" data-slug="${esc(slug)}">Send a failed run</button> <button class="btn pri" data-act="ping" data-slug="${esc(slug)}">Send a successful run</button></span></div></section>` : ""}
 <div class="box"><div class="box-h"><h2>Recent runs</h2></div><table><caption class="sr">Recent runs</caption><thead><tr><th>Time</th><th>Result</th><th class="hide-sm">Duration</th><th>Note</th></tr></thead><tbody>${runs.length ? runs.map(r => `<tr><td class="num">${new Date(r.t * 1000).toLocaleString()}</td><td>${r.ok ? '<span class="st ok"><i></i>Succeeded</span>' : '<span class="st bad"><i></i>Failed</span>'}</td><td class="num hide-sm">${r.d ? Math.round(r.d) + " ms" : "n/a"}</td><td class="mute">${esc(r.note || "")}</td></tr>`).join("") : `<tr><td colspan="4" class="mute">No recent runs loaded.</td></tr>`}</tbody></table></div>`;
 }
+const noteOf = p => { try { const o = JSON.parse(p); return o.error || o.note || ""; } catch { return ""; } };
+const readTs = () => { let v = 0; try { v = +localStorage.getItem("hb-read") || 0; } catch {} return Math.max(v, S.readMem); };
+const markRead = () => { S.readMem = Date.now() / 1000; try { localStorage.setItem("hb-read", String(S.readMem)); } catch {} };
+function getAlerts() {
+  if (S.mode !== "demo") return S.alerts;
+  return S.list.filter(m => ORDER[m.state] < 4).map(m => ({ slug: m.slug, state: m.state, ts: m.state === "failing" ? m.last_seen : m.last_seen + (m.expected_within || 0), text: `${m.slug} is ${LABEL[m.state].toLowerCase()}` })).sort((a, b) => b.ts - a.ts);
+}
+function getActivity() {
+  if (S.mode !== "demo") return S.act.map(x => ({ slug: x.slug, t: x.ts, ok: !!x.ok, note: noteOf(x.payload) }));
+  return Object.entries(demo).flatMap(([slug, r]) => r.slice(-10).map(x => ({ slug, t: x.t, ok: x.ok, note: x.note }))).sort((a, b) => b.t - a.t).slice(0, 40);
+}
+function bell() {
+  const A = getAlerts(), rt = readTs(), n = A.filter(a => a.ts > rt).length;
+  const icon = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>';
+  const items = A.slice(0, 15).map(a => `<li class="${a.ts > rt ? "unread" : ""}"><span class="st ${a.state === "ok" ? "ok" : TONE[a.state]}"><i></i><span class="sr">${LABEL[a.state] || ""}</span></span><div><div>${esc(a.text)}</div><div class="sub2">${ago(a.ts)}</div></div></li>`).join("");
+  return `<span class="bellwrap"><button class="btn sm icon" data-act="bell" aria-label="Notifications${n ? `, ${n} unread` : ""}" aria-expanded="${S.inbox}">${icon}${n ? `<b class="dot" aria-hidden="true">${n}</b>` : ""}</button>${S.inbox ? `<div class="inbox" role="region" aria-label="Notifications"><div class="inbox-h"><h2>Notifications</h2><button class="btn sm" data-act="readall" ${n ? "" : "disabled"}>Mark all as read</button></div>${A.length ? `<ul>${items}</ul>` : '<p class="mute" style="padding:32px 16px;text-align:center;margin:0">No notifications yet. Alerts appear here when a workflow goes quiet, fails or recovers.</p>'}<div class="inbox-f"><a href="#/activity">View all activity</a></div></div>` : ""}</span>`;
+}
+function activity() {
+  const v = getActivity().filter(x => S.af === "all" || !x.ok);
+  return `<h1>Activity</h1><p class="lede">The latest runs reported by every workflow, newest first.</p>${S.mode === "demo" ? '<p class="note">Demo data. These runs are simulated in your browser.</p>' : ""}
+<div class="box"><div class="box-h"><h2>Recent runs</h2><span class="grow"></span><label class="sr" for="af">Filter</label><select id="af">${[["all", "All runs"], ["fail", "Failed only"]].map(([k, t]) => `<option value="${k}" ${S.af === k ? "selected" : ""}>${t}</option>`).join("")}</select></div>
+<table><caption class="sr">Recent runs across all workflows</caption><thead><tr><th>Time</th><th>Workflow</th><th>Result</th><th class="hide-sm">Note</th></tr></thead><tbody>${v.length ? v.map(x => `<tr data-href="#/m/${encodeURIComponent(x.slug)}"><td class="num">${new Date(x.t * 1000).toLocaleString()}<div class="sub2">${ago(x.t)}</div></td><td><a href="#/m/${encodeURIComponent(x.slug)}">${esc(x.slug)}</a></td><td>${x.ok ? '<span class="st ok"><i></i>Succeeded</span>' : '<span class="st bad"><i></i>Failed</span>'}</td><td class="mute hide-sm">${esc(x.note || "")}</td></tr>`).join("") : '<tr><td colspan="4" class="mute">No runs to show yet.</td></tr>'}</tbody></table></div>`;
+}
 function settings() {
   const live = S.mode === "live", t = theme();
   return `<h1>Settings</h1><p class="lede">${live ? "Connect workflows, change the look, and manage your session." : "Demo mode has no server, so there is nothing to connect yet."}</p>
@@ -119,15 +145,18 @@ function render() {
   if (S.mode === "loading") { app.innerHTML = '<main class="page"><div class="sk" style="width:40%;height:32px"></div><div class="sk" style="width:60%"></div><div class="sk" style="height:120px;margin-top:24px"></div><div class="sk" style="height:200px"></div></main>'; return; }
   if (S.mode === "login") { app.innerHTML = loginView(); return; }
   if (S.mode === "setup") { app.innerHTML = authView(`<h1>Almost there</h1><p class="fine" style="font-size:15px">${esc(S.setup)}</p>`); return; }
-  app.innerHTML = shell(r === "d" ? detail(arg) : r === "s" ? settings() : overview(), r);
-  document.title = (r === "d" ? arg + " | " : r === "s" ? "Settings | " : "") + "Heartbeat";
+  app.innerHTML = shell(r === "d" ? detail(arg) : r === "s" ? settings() : r === "a" ? activity() : overview(), r);
+  document.title = (r === "d" ? arg + " | " : r === "s" ? "Settings | " : r === "a" ? "Activity | " : "") + "Heartbeat";
 }
 const toast = t => { const e = $("#toast"); if (!e) return; e.textContent = t; e.classList.add("show"); setTimeout(() => e.classList.remove("show"), 2000); };
 
 document.addEventListener("click", async e => {
+  if (S.inbox && !e.target.closest(".inbox,[data-act=bell]")) { S.inbox = false; render(); }
   const tr = e.target.closest("tr[data-href]"); if (tr && !e.target.closest("a,button")) { location.hash = tr.dataset.href.slice(1); return; }
   const b = e.target.closest("[data-act]"); if (!b) return; const a = b.dataset.act;
   if (a === "copy") { try { await navigator.clipboard.writeText(b.dataset.text); toast("Copied"); } catch { toast("Copy failed. Select the text manually."); } }
+  else if (a === "bell") { S.inbox = !S.inbox; render(); }
+  else if (a === "readall") { markRead(); render(); }
   else if (a === "reveal") { S.revealed = !S.revealed; render(); }
   else if (a === "jump") document.getElementById(b.dataset.id)?.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
   else if (a === "reset") { demo = null; useDemo(); render(); toast("Demo data reset"); }
@@ -139,6 +168,7 @@ document.addEventListener("click", async e => {
 document.addEventListener("input", e => { if (e.target.id === "q") { S.q = e.target.value; $("#rows").innerHTML = rows(); } });
 document.addEventListener("change", e => {
   if (e.target.id === "f") { S.f = e.target.value; $("#rows").innerHTML = rows(); }
+  if (e.target.id === "af") { S.af = e.target.value; render(); }
   if (e.target.id === "theme") { try { localStorage.setItem("hb-theme", e.target.value); } catch {} applyTheme(e.target.value); }
 });
 document.addEventListener("submit", async e => {
@@ -150,6 +180,7 @@ document.addEventListener("submit", async e => {
   render();
 });
 addEventListener("hashchange", onRoute);
+document.addEventListener("keydown", e => { if (e.key === "Escape" && S.inbox) { S.inbox = false; render(); } });
 applyTheme(theme()); render(); refresh();
-setInterval(() => { if (!["q", "pw", "theme", "f"].includes(document.activeElement?.id) && S.mode !== "login") refresh(); }, 15000);
+setInterval(() => { if (!["q", "pw", "theme", "f", "af"].includes(document.activeElement?.id) && S.mode !== "login") refresh(); }, 15000);
 })();
